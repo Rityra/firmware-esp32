@@ -18,10 +18,16 @@ arduino-cli lib install PubSubClient
 
 Compile for esp32
 ```
-arduino-cli compile --fqbn esp32:esp32:nodemcu-32s aws_iot_tls.ino
+arduino-cli compile --fqbn esp32:esp32:esp32 aws_iot_tls.ino
 ```
 
 Upload to board:
 ```
-arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:nodemcu-32s aws_iot_tls.ino
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 aws_iot_tls.ino
 ```
+
+Reset ESP32 flash memory:
+- [step by step](https://randomnerdtutorials.com/esp32-erase-flash-memory/)
+- [dependencies](https://docs.espressif.com/projects/esptool/en/latest/esp32/installation.html)
+- [Python venv in Arch](https://stackoverflow.com/a/79304690/10708345)
+
