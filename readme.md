@@ -19,11 +19,15 @@ arduino-cli lib install PubSubClient
 Compile for esp32
 ```
 arduino-cli compile --fqbn esp32:esp32:esp32 aws_iot_tls.ino
+
+arduino-cli compile --fqbn esp32:esp32:esp32 wifi_ap.ino
 ```
 
 Upload to board:
 ```
 arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 aws_iot_tls.ino
+
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 wifi_ap.ino
 ```
 
 Reset ESP32 flash memory:
