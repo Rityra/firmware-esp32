@@ -30,4 +30,5 @@ Reset ESP32 flash memory:
 - [step by step](https://randomnerdtutorials.com/esp32-erase-flash-memory/)
 - [dependencies](https://docs.espressif.com/projects/esptool/en/latest/esp32/installation.html)
 - [Python venv in Arch](https://stackoverflow.com/a/79304690/10708345)
+- TL;TR: press the board's boot button + `python -m esptool --chip esp32 erase_flash`
 
