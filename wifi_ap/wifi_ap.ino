@@ -1,86 +1,3 @@
-/*
-  =====================================================================
-  ESP32 smartThing - WiFi Provisioning (AP + POST JSON) + MQTT (AWS IoT)
-  =====================================================================
-
-  ---------------------------------------------------------------------
-  A) HELP - PROVISIONING WiFi (POST JSON)
-  ---------------------------------------------------------------------
-
-  HOTSPOT (AP):
-    SSID: smartThing
-    PASS: 12345678
-    IP:   192.168.4.1
-
-  ENDPOINTS:
-    GET  /        -> info + esempio
-    POST /wifi    -> provisioning WiFi
-    POST /clear   -> cancella credenziali salvate
-
-  1) POSTMAN
-    - Connettiti al WiFi: smartThing (pass 12345678)
-    - POST  http://192.168.4.1/wifi
-    - Body -> raw -> JSON:
-      {
-        "ssid": "NomeRete2.4G",
-        "pwd":  "PasswordRete"
-      }
-    - Headers:
-      Content-Type: application/json
-
-  2) CURL
-    curl -X POST http://192.168.4.1/wifi \
-      -H "Content-Type: application/json" \
-      -d "{\"ssid\":\"NomeRete2.4G\",\"pwd\":\"PasswordRete\"}"
-
-  NOTE:
-  - ESP32 supporta 2.4GHz (non 5GHz)
-  - JSON valido: virgolette + virgola
-
-  ---------------------------------------------------------------------
-  B) HELP - MQTT (AWS IoT Core)
-  ---------------------------------------------------------------------
-
-  TOPIC usati:
-    - Pubblica stato LED:     demo/led/state        (JSON)
-    - Riceve comando LED:     demo/led/set          ("on"/"off" oppure JSON)
-    - Pubblica pulsanti:      demo/buttons          (JSON)
-    - (opzionale) heartbeat:  demo/heartbeat        (JSON)
-
-  Comando LED - esempi payload accettati:
-    1) Testo:
-       on
-       off
-    2) JSON:
-       {"led":true}
-       {"led":false}
-
-  Come testare da PC (mosquitto) *se usi un broker locale*:
-    - Subscribe:
-      mosquitto_sub -h <broker> -t "demo/#" -v
-    - Publish:
-      mosquitto_pub -h <broker> -t "demo/led/set" -m "on"
-
-  Per AWS IoT Core:
-    - In console AWS IoT -> MQTT test client:
-      Subscribe: demo/#
-      Publish su demo/led/set con payload "on" o {"led":true}
-
-  IMPORTANTISSIMO:
-  - Su AWS IoT la connessione MQTT TLS richiede:
-      * Root CA
-      * Certificato device
-      * Private key
-    - E policy che permetta i topic demo/...
-
-  ---------------------------------------------------------------------
-  NOTE TECNICHE
-  ---------------------------------------------------------------------
-  - Salvataggio credenziali: Preferences (NVS)
-  - Log seriale ovunque
-  - WiFi connect robusto: persistent(false), sleep(false)
-*/
-
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -89,42 +6,51 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoMqttClient.h>
 
-// ==================== CONFIG GENERALE ====================
+#include "BluetoothSerial.h"
+
+// ==================== CHECK BLUETOOTH ====================
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+
+// ==================== GLOBAL CONFIG ======================
 
 // AP provisioning
-static const char* AP_SSID = "smartThing";
-static const char* AP_PASS = "12345678";
+static const char *AP_SSID = "smartThing";
+static const char *AP_PASS = "12345678";
 
-// Timeout e retry WiFi
+// Timeout and WiFi fallback
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
-static const uint8_t  WIFI_CONNECT_RETRIES    = 2;
+static const uint8_t WIFI_CONNECT_RETRIES = 2;
 
-// Cooldown riconnessione
+// Cooldown
 uint32_t lastReconnectAttemptMs = 0;
 static const uint32_t RECONNECT_COOLDOWN_MS = 2000;
 
 // ==================== CONFIG MQTT / AWS IoT ====================
 
-// Inserisci qui il tuo endpoint AWS IoT
-static const char* AWS_IOT_ENDPOINT = "a2eqw4se8i5px2-ats.iot.eu-west-1.amazonaws.com";
-static const int   AWS_IOT_PORT     = 8883;
+// AWS IoT endpoint
+static const char *AWS_IOT_ENDPOINT = "a2eqw4se8i5px2-ats.iot.eu-west-1.amazonaws.com";
+static const int AWS_IOT_PORT = 8883;
 
-// Topic demo (come nel tuo codice)
-static const char* TOPIC_LED_SET   = "demo/led/set";
-static const char* TOPIC_LED_STATE = "demo/led/state";
-static const char* TOPIC_BUTTONS   = "demo/buttons";
-static const char* TOPIC_HEARTBEAT = "demo/heartbeat";
+// Topic demo
+static const char *TOPIC_LED_SET = "demo/led/set";
+static const char *TOPIC_LED_STATE = "demo/led/state";
+static const char *TOPIC_BUTTONS = "demo/buttons";
+static const char *TOPIC_HEARTBEAT = "demo/heartbeat";
 
-// ClientID MQTT (meglio unico)
-static const char* MQTT_CLIENT_ID = "smartThing-esp32";
+// ClientID MQTT -- currently allows smartThing-*
+static const char *MQTT_CLIENT_ID = "smartThing-esp32";
 
-// ==================== HW (LED + bottoni) ====================
+// ==================== HW (LED + buttons) ======================
 static const int LED_PIN = 2;
 static const int BUTTON1_PIN = 12;
 static const int BUTTON2_PIN = 14;
 static const uint32_t DEBOUNCE_MS = 40;
 
-struct ButtonState {
+struct ButtonState
+{
   int pin;
   bool stableLevel;
   bool lastReadLevel;
@@ -134,7 +60,7 @@ struct ButtonState {
 ButtonState b1{BUTTON1_PIN, true, true, 0};
 ButtonState b2{BUTTON2_PIN, true, true, 0};
 
-// ===================== CERTIFICATES =====================
+// ===================== CERTIFICATES ==========================
 static const char AWS_ROOT_CA[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
 MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
@@ -211,14 +137,20 @@ LDRVBquGud1K3lDouofwQSajhMwMU7mPujy2NFIfkeslqSbUj0Y=
 -----END RSA PRIVATE KEY-----
 )EOF";
 
-// ===================== GLOBALS =====================
+// ===================== GLOBALS ================================
 WebServer server(80);
+BluetoothSerial SerialBT;
 Preferences prefs;
 
 String savedSsid;
 String savedPwd;
 
-enum class NetMode { STA_OK, AP_MODE };
+enum class NetMode
+{
+  STA_OK,
+  AP_MODE,
+  BT_CLS
+};
 NetMode mode = NetMode::AP_MODE;
 
 // MQTT client
@@ -226,36 +158,50 @@ WiFiClientSecure tlsClient;
 MqttClient mqttClient(tlsClient);
 bool mqttReady = false;
 
-// Azioni da fare DOPO aver risposto via HTTP (evita di chiudere la connessione durante la POST)
-volatile bool pendingStopAp   = false;
-volatile bool pendingMqtt     = false;
+// actions to be performed after HTTP connection
+// avoid closing connection while engaging with POST endpoint
+volatile bool pendingStopAp = false;
+volatile bool pendingMqtt = false;
 volatile bool pendingRestartAp = false;
 volatile bool pendingReboot = false;
 
-// ==================== UTILITY ====================
+// ==================== UTILITIES ==============================
 
-const char* wifiStatusToStr(wl_status_t st) {
-  switch (st) {
-    case WL_IDLE_STATUS:     return "IDLE";
-    case WL_NO_SSID_AVAIL:   return "NO_SSID_AVAIL";
-    case WL_SCAN_COMPLETED:  return "SCAN_COMPLETED";
-    case WL_CONNECTED:       return "CONNECTED";
-    case WL_CONNECT_FAILED:  return "CONNECT_FAILED";
-    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
-    case WL_DISCONNECTED:    return "DISCONNECTED";
-    default:                 return "UNKNOWN";
+const char *wifiStatusToStr(wl_status_t st)
+{
+  switch (st)
+  {
+  case WL_IDLE_STATUS:
+    return "IDLE";
+  case WL_NO_SSID_AVAIL:
+    return "NO_SSID_AVAIL";
+  case WL_SCAN_COMPLETED:
+    return "SCAN_COMPLETED";
+  case WL_CONNECTED:
+    return "CONNECTED";
+  case WL_CONNECT_FAILED:
+    return "CONNECT_FAILED";
+  case WL_CONNECTION_LOST:
+    return "CONNECTION_LOST";
+  case WL_DISCONNECTED:
+    return "DISCONNECTED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-void sendJson(int code, const JsonDocument& doc) {
+void sendJson(int code, const JsonDocument &doc)
+{
   String out;
   serializeJson(doc, out);
   server.send(code, "application/json", out);
 }
 
 // ==================== EVENTI WIFI (reason code) ====================
-void attachWiFiEvents() {
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+void attachWiFiEvents()
+{
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+               {
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       Serial.print("[EVENT] STA_DISCONNECTED reason=");
       Serial.println(info.wifi_sta_disconnected.reason);
@@ -268,64 +214,75 @@ void attachWiFiEvents() {
       Serial.println("[EVENT] AP_START");
     } else if (event == ARDUINO_EVENT_WIFI_AP_STOP) {
       Serial.println("[EVENT] AP_STOP");
-    }
-  });
+    } });
 }
 
 // ==================== NVS: load/save/clear ====================
-void loadCreds() {
-  Serial.println("[NVS] Lettura credenziali salvate...");
+void loadCreds()
+{
+  Serial.println("[NVS] Reading stored credentials...");
   prefs.begin("wifi", true);
   savedSsid = prefs.getString("ssid", "");
-  savedPwd  = prefs.getString("pwd", "");
+  savedPwd = prefs.getString("pwd", "");
   prefs.end();
 
-  if (savedSsid.length() > 0) {
-    Serial.print("[NVS] SSID salvato: ");
+  if (savedSsid.length() > 0)
+  {
+    Serial.print("[NVS] Stored SSID: ");
     Serial.println(savedSsid);
-    Serial.print("[NVS] PWD salvata: ");
-    Serial.println(savedPwd.length() ? "(non vuota)" : "(vuota)");
-  } else {
-    Serial.println("[NVS] Nessuna credenziale salvata.");
+    Serial.print("[NVS] Stored PWD: ");
+    Serial.println(savedPwd.length() ? "(not empty)" : "(empty)");
+  }
+  else
+  {
+    Serial.println("[NVS] Could not find any stored credentials.");
   }
 }
 
-void saveCreds(const String& ssid, const String& pwd) {
-  Serial.println("[NVS] Salvataggio credenziali...");
-  Serial.print("[NVS] SSID = "); Serial.println(ssid);
-  Serial.print("[NVS] PWD  = "); Serial.println(pwd.length() ? "(non vuota)" : "(vuota)");
+void saveCreds(const String &ssid, const String &pwd)
+{
+  Serial.println("[NVS] Storing credentials...");
+  Serial.print("[NVS] SSID = ");
+  Serial.println(ssid);
+  Serial.print("[NVS] PWD  = ");
+  Serial.println(pwd.length() ? "(not empty)" : "(empty)");
 
   prefs.begin("wifi", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pwd", pwd);
   prefs.end();
 
-  Serial.println("[NVS] Salvate OK.");
+  Serial.println("[NVS] Successfully stored.");
 }
 
-void clearCreds() {
-  Serial.println("[NVS] Rimozione chiavi ssid/pwd...");
+void clearCreds()
+{
+  Serial.println("[NVS] Removing stored ssid/pwd...");
   prefs.begin("wifi", false);
   prefs.remove("ssid");
   prefs.remove("pwd");
   prefs.end();
-  Serial.println("[NVS] Cancellate.");
+  Serial.println("[NVS] Successfully removed.");
 }
 
-// ==================== WIFI CONNECT (robusto) ====================
-bool connectSTA(const char* ssid, const char* pwd, uint32_t timeoutMs) {
+// ==================== WIFI CONNECT (persistent) ==========================
+bool connectSTA(const char *ssid, const char *pwd, uint32_t timeoutMs)
+{
   Serial.println("--------------------------------------------------");
-  Serial.println("[STA] Tentativo connessione WiFi");
-  Serial.print("[STA] SSID: "); Serial.println(ssid);
-  Serial.print("[STA] Timeout (ms): "); Serial.println(timeoutMs);
+  Serial.println("[STA] Establishing WiFi connection...");
+  Serial.print("[STA] SSID: ");
+  Serial.println(ssid);
+  Serial.print("[STA] Timeout (ms): ");
+  Serial.println(timeoutMs);
 
   WiFi.persistent(false);
-  // IMPORTANTISSIMO: se siamo in AP provisioning, NON passare a WIFI_STA (butta giù l'AP e cade la POST)
+  // IMPORTANt: when AP provisioning, DO NOT switch to WIFI_STA
+  // (terminates AP and access to POST)
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  
-  // Evita disconnect(true) (può resettare e far cadere l'AP / connessione HTTP)
-  // Se vuoi pulire solo la parte STA usa disconnect(false,false)
+
+  // Avoid disconnect(true) (it might reset and terminate AP and/or HTTP connection)
+  // disconnect(false,false) terminated STA only
   Serial.println("[STA] WiFi.disconnect(false,false) + delay(200)");
   WiFi.disconnect(false, false);
   delay(200);
@@ -334,7 +291,8 @@ bool connectSTA(const char* ssid, const char* pwd, uint32_t timeoutMs) {
   WiFi.begin(ssid, pwd);
 
   uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs)
+  {
     delay(200);
     Serial.print(".");
   }
@@ -344,22 +302,26 @@ bool connectSTA(const char* ssid, const char* pwd, uint32_t timeoutMs) {
   Serial.print("[WiFi] Status = ");
   Serial.println(wifiStatusToStr(st));
 
-  if (st == WL_CONNECTED) {
-    Serial.println("[STA] Connessione OK!");
-    Serial.print("[STA] IP: "); Serial.println(WiFi.localIP());
-    Serial.print("[STA] RSSI: "); Serial.println(WiFi.RSSI());
+  if (st == WL_CONNECTED)
+  {
+    Serial.println("[STA] Connection OK!");
+    Serial.print("[STA] IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("[STA] RSSI: ");
+    Serial.println(WiFi.RSSI());
     Serial.println("--------------------------------------------------");
     return true;
   }
 
-  Serial.println("[STA] Connessione FALLITA.");
+  Serial.println("[STA] Connection Failed.");
   Serial.println("--------------------------------------------------");
   return false;
 }
 
-// ==================== AP start/stop ====================
-void stopAPKeepSTA() {
-  Serial.println("[AP] Spegnimento hotspot (softAPdisconnect)");
+// ==================== AP start/stop ==================================
+void stopAPKeepSTA()
+{
+  Serial.println("[AP] Tearing down Access Point (softAPdisconnect)");
 
   WiFi.mode(WIFI_AP_STA);
   delay(100);
@@ -370,111 +332,135 @@ void stopAPKeepSTA() {
 
   delay(100);
   WiFi.mode(WIFI_STA);
-  Serial.println("[STA] Rimasto in modalità STA");
+  Serial.println("[STA] Connection mode STA");
 }
 
 // ==================== MQTT ====================
 
-void publishText(const char* topic, const String& payload) {
-  if (!mqttClient.connected()) return;
+void publishText(const char *topic, const String &payload)
+{
+  if (!mqttClient.connected())
+    return;
   mqttClient.beginMessage(topic);
   mqttClient.print(payload);
   mqttClient.endMessage();
 }
 
-void publishJson(const char* topic, const JsonDocument& doc) {
-  if (!mqttClient.connected()) return;
+void publishJson(const char *topic, const JsonDocument &doc)
+{
+  if (!mqttClient.connected())
+    return;
   String out;
   serializeJson(doc, out);
   publishText(topic, out);
 }
 
-void setLed(bool on) {
+void setLed(bool on)
+{
   digitalWrite(LED_PIN, on ? HIGH : LOW);
 
   StaticJsonDocument<128> doc;
   doc["led"] = on;
-  doc["ts"]  = (uint32_t)millis();
+  doc["ts"] = (uint32_t)millis();
   publishJson(TOPIC_LED_STATE, doc);
 
-  Serial.print("[LED] Stato impostato: ");
+  Serial.print("[LED] Current state: ");
   Serial.println(on ? "ON" : "OFF");
 }
 
-bool parseLedCommand(const String& payload, bool& outOn) {
+bool parseLedCommand(const String &payload, bool &outOn)
+{
   String p = payload;
   p.trim();
   p.toLowerCase();
 
-  // Caso testo semplice
-  if (p == "on" || p == "1" || p == "true")  { outOn = true;  return true; }
-  if (p == "off"|| p == "0" || p == "false") { outOn = false; return true; }
+  // Plain Text case, e.g. "on"
+  if (p == "on" || p == "1" || p == "true")
+  {
+    outOn = true;
+    return true;
+  }
+  if (p == "off" || p == "0" || p == "false")
+  {
+    outOn = false;
+    return true;
+  }
 
-  // Caso JSON: {"led":true}
+  // JSON case, e.g. { "led" : true }
   StaticJsonDocument<128> doc;
   DeserializationError e = deserializeJson(doc, p);
-  if (e) return false;
+  if (e)
+    return false;
 
-  if (doc.containsKey("led")) {
+  if (doc.containsKey("led"))
+  {
     outOn = doc["led"].as<bool>();
     return true;
   }
   return false;
 }
 
-void onMqttMessage(int messageSize) {
+void onMqttMessage(int messageSize)
+{
   String topic = mqttClient.messageTopic();
 
-  // Legge TUTTO il payload
+  // Read entire payload
   String payload;
-  while (mqttClient.available()) {
+  while (mqttClient.available())
+  {
     payload += (char)mqttClient.read();
   }
 
   Serial.println("--------------------------------------------------");
-  Serial.print("[MQTT] Msg su topic: ");
+  Serial.print("[MQTT] Msg on topic: ");
   Serial.println(topic);
   Serial.print("[MQTT] Payload: ");
   Serial.println(payload);
   Serial.println("--------------------------------------------------");
 
-  if (topic == TOPIC_LED_SET) {
+  if (topic == TOPIC_LED_SET)
+  {
     bool on;
-    if (parseLedCommand(payload, on)) {
+    if (parseLedCommand(payload, on))
+    {
       setLed(on);
-    } else {
-      Serial.println("[MQTT] Comando LED non valido (atteso on/off o JSON {\"led\":true})");
+    }
+    else
+    {
+      Serial.println("[MQTT] LED command not valid (expected on/off o JSON {\"led\":true})");
     }
   }
 }
 
-bool mqttConnect() {
+bool mqttConnect()
+{
   Serial.println("[MQTT] Config TLS cert...");
   tlsClient.setCACert(AWS_ROOT_CA);
   tlsClient.setCertificate(DEVICE_CERT);
   tlsClient.setPrivateKey(DEVICE_PRIVATE_KEY);
 
-  Serial.print("[MQTT] Connessione a AWS IoT: ");
+  Serial.print("[MQTT] Connecting to AWS IoT: ");
   Serial.print(AWS_IOT_ENDPOINT);
   Serial.print(":");
   Serial.println(AWS_IOT_PORT);
 
   mqttClient.setId(MQTT_CLIENT_ID);
 
-  if (!mqttClient.connect(AWS_IOT_ENDPOINT, AWS_IOT_PORT)) {
-    Serial.print("[MQTT] Connect FALLITA, error: ");
+  if (!mqttClient.connect(AWS_IOT_ENDPOINT, AWS_IOT_PORT))
+  {
+    Serial.print("[MQTT] Connection Failed, error: ");
     Serial.println(mqttClient.connectError());
     return false;
   }
 
-  Serial.println("[MQTT] Connesso!");
+  Serial.println("[MQTT] Connection OK!");
   mqttClient.onMessage(onMqttMessage);
 
   Serial.print("[MQTT] Subscribe: ");
   Serial.println(TOPIC_LED_SET);
   mqttClient.subscribe(TOPIC_LED_SET);
 
-  // Heartbeat iniziale
+  // Initial Heartbeat
   StaticJsonDocument<128> hb;
   hb["status"] = "online";
   hb["ip"] = WiFi.localIP().toString();
@@ -485,23 +471,26 @@ bool mqttConnect() {
 }
 
 // ==================== BUTTONS ====================
-void handleButton(ButtonState& b, int id) {
+void handleButton(ButtonState &b, int id)
+{
   bool readLevel = digitalRead(b.pin);
 
-  if (readLevel != b.lastReadLevel) {
+  if (readLevel != b.lastReadLevel)
+  {
     b.lastReadLevel = readLevel;
     b.lastChangeMs = millis();
   }
 
-  if ((millis() - b.lastChangeMs) >= DEBOUNCE_MS && readLevel != b.stableLevel) {
+  if ((millis() - b.lastChangeMs) >= DEBOUNCE_MS && readLevel != b.stableLevel)
+  {
     b.stableLevel = readLevel;
 
     bool pressed = (b.stableLevel == LOW);
 
     StaticJsonDocument<128> doc;
-    doc["button"]  = id;
+    doc["button"] = id;
     doc["pressed"] = pressed;
-    doc["ts"]      = (uint32_t)millis();
+    doc["ts"] = (uint32_t)millis();
 
     publishJson(TOPIC_BUTTONS, doc);
 
@@ -513,11 +502,14 @@ void handleButton(ButtonState& b, int id) {
 }
 
 // ==================== AP WEB SERVER ====================
-void startAP() {
+void startAP()
+{
   Serial.println("==================================================");
-  Serial.println("[AP] Avvio hotspot provisioning...");
-  Serial.print("[AP] SSID: "); Serial.println(AP_SSID);
-  Serial.print("[AP] PASS: "); Serial.println(AP_PASS);
+  Serial.println("[AP] Starting access point provisioning...");
+  Serial.print("[AP] SSID: ");
+  Serial.println(AP_SSID);
+  Serial.print("[AP] PASS: ");
+  Serial.println(AP_PASS);
 
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
@@ -527,13 +519,14 @@ void startAP() {
   Serial.println(ok ? "OK" : "FAIL");
 
   IPAddress apIP = WiFi.softAPIP();
-  Serial.print("[AP] IP hotspot: ");
+  Serial.print("[AP] IP access point: ");
   Serial.println(apIP);
 
   server.stop();
   server.close();
 
-  server.on("/", HTTP_GET, [apIP]() {
+  server.on("/", HTTP_GET, [apIP]()
+            {
     Serial.println("[HTTP] GET /");
 
     StaticJsonDocument<512> doc;
@@ -543,22 +536,22 @@ void startAP() {
     doc["post_to"] = "/wifi";
     doc["example"] = "{\"ssid\":\"YourWiFi2.4G\",\"pwd\":\"YourPass\"}";
     doc["clear_saved"] = "POST /clear";
-    sendJson(200, doc);
-  });
+    sendJson(200, doc); });
 
-  server.on("/wifi", HTTP_POST, []() {
+  server.on("/wifi", HTTP_POST, []()
+            {
   Serial.println("[HTTP] POST /wifi");
 
   if (!server.hasArg("plain")) {
     StaticJsonDocument<180> err;
     err["ok"] = false;
-    err["error"] = "Body mancante (plain)";
+    err["error"] = "Body is missing (plain)";
     sendJson(400, err);
     return;
   }
 
   String body = server.arg("plain");
-  Serial.print("[HTTP] Body ricevuto: ");
+  Serial.print("[HTTP] Body was received: ");
   Serial.println(body);
 
   StaticJsonDocument<256> doc;
@@ -566,7 +559,7 @@ void startAP() {
   if (e) {
     StaticJsonDocument<240> err;
     err["ok"] = false;
-    err["error"] = "JSON non valido";
+    err["error"] = "JSON not valid";
     err["detail"] = e.c_str();
     sendJson(400, err);
     return;
@@ -578,16 +571,16 @@ void startAP() {
   if (!ssid || String(ssid).length() == 0) {
     StaticJsonDocument<200> err;
     err["ok"] = false;
-    err["error"] = "Campo 'ssid' mancante o vuoto";
+    err["error"] = "Missing or empty 'ssid'";
     sendJson(400, err);
     return;
   }
   if (!pwd) pwd = "";
 
-  Serial.print("[PROV] SSID ricevuto: ");
+  Serial.print("[PROV] SSID received: ");
   Serial.println(ssid);
 
-  // Salva e rispondi subito (NON connettersi ora)
+  // Save credentials and respond (DO NOT connect right away)
   saveCreds(ssid, pwd);
   savedSsid = ssid;
   savedPwd  = pwd;
@@ -595,16 +588,16 @@ void startAP() {
   StaticJsonDocument<384> resp;
   resp["ok"] = true;
   resp["ssid"] = ssid;
-  resp["status"] = "salvato_riavvio";
-  resp["note"] = "Il device si riavvia e prova a connettersi alla rete salvata";
+  resp["status"] = "rebooting";
+  resp["note"] = "The device is rebooting and will try to connect to the provided network";
   sendJson(200, resp);
   delay(50);
-  pendingReboot = true;
-});
+  pendingReboot = true; });
 
-    // Route /clear (FUORI da /wifi)
-server.on("/clear", HTTP_POST, []() {
-    Serial.println("[HTTP] POST /clear -> cancello credenziali");
+  // Route /clear
+  server.on("/clear", HTTP_POST, []()
+            {
+    Serial.println("[HTTP] POST /clear -> deleting credentials");
 
     clearCreds();
     savedSsid = "";
@@ -612,25 +605,34 @@ server.on("/clear", HTTP_POST, []() {
 
     StaticJsonDocument<180> resp;
     resp["ok"] = true;
-    resp["status"] = "credenziali_cancellate";
-    sendJson(200, resp);
-  });
+    resp["status"] = "deleted";
+    sendJson(200, resp); });
 
   server.begin();
-  Serial.println("[HTTP] Server avviato su porta 80");
+  Serial.println("[HTTP] Server running on port 80");
   Serial.println("==================================================");
-} // <-- CHIUDE startAP()
+}
 
+void serialBTCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
+{
+  Serial.println("[BOOT] STA_OK -> Trying to connect to MQTT...");
+  mode = NetMode::BT_CLS;
+  mqttReady = mqttConnect();
 
-// ==================== SETUP / LOOP ====================
-void setup() {
+  Serial.println("[BOOT] Successfully booted in BT_CLS mode");
+  Serial.println("###############################################");
+}
+
+// ==================== SETUP / LOOP ==================================
+void setup()
+{
   Serial.begin(115200);
   delay(250);
 
   Serial.println();
-  Serial.println("###############################################");
-  Serial.println("# smartThing - WiFi + MQTT Boot               #");
-  Serial.println("###############################################");
+  Serial.println("#####################################################");
+  Serial.println("# smartThing - WiFi + MQTT Boot + BlueTooth CLassic #");
+  Serial.println("#####################################################");
 
   // GPIO
   pinMode(LED_PIN, OUTPUT);
@@ -642,91 +644,132 @@ void setup() {
   attachWiFiEvents();
   loadCreds();
 
-  // Se credenziali salvate: prova STA con retry
-  if (savedSsid.length() > 0) {
-    Serial.println("[BOOT] Trovate credenziali -> provo connessione STA...");
+  // When stored credentials exist: try connecting to STA with retry fallback
+  if (savedSsid.length() > 0)
+  {
+    Serial.println("[BOOT] Credentials found -> trying connecting to STA...");
 
     bool ok = false;
-    for (uint8_t i = 1; i <= WIFI_CONNECT_RETRIES; i++) {
-      Serial.print("[BOOT] Tentativo #");
+    for (uint8_t i = 1; i <= WIFI_CONNECT_RETRIES; i++)
+    {
+      Serial.print("[BOOT] Attempt #");
       Serial.println(i);
 
       ok = connectSTA(savedSsid.c_str(), savedPwd.c_str(), WIFI_CONNECT_TIMEOUT_MS);
-      if (ok) break;
+      if (ok)
+        break;
 
-      Serial.println("[BOOT] Attendo 1s prima del prossimo tentativo...");
+      Serial.println("[BOOT] Awaiting 1s before next attempt...");
       delay(1000);
     }
 
-    if (ok) {
+    if (ok)
+    {
       mode = NetMode::STA_OK;
-      Serial.println("[BOOT] STA_OK -> provo MQTT...");
+      Serial.println("[BOOT] STA_OK -> Trying to connect to MQTT...");
       mqttReady = mqttConnect();
 
-      Serial.println("[BOOT] Avvio completato in modalità STA_OK");
+      Serial.println("[BOOT] Successfully booted in STA_OK mode");
       Serial.println("###############################################");
       return;
     }
 
-    Serial.println("[BOOT] Connessione fallita -> avvio AP provisioning");
-  } else {
-    Serial.println("[BOOT] Nessuna credenziale -> avvio AP provisioning");
+    Serial.println("[BOOT] Connection Failed -> start AP provisioning");
+  }
+  else
+  {
+    Serial.println("[BOOT] Missing Credentials -> start AP provisioning");
+  }
+
+  SerialBT.register_callback(serialBTCallback);
+
+  if (!SerialBT.begin("smartThing"))
+  {
+    Serial.println("An error occurred initializing Bluetooth");
+  }
+  else
+  {
+    Serial.println("Bluetooth initialized");
   }
 
   // Fallback: AP provisioning
   mode = NetMode::AP_MODE;
   startAP();
 
-  Serial.println("[BOOT] Avvio completato in modalità AP_MODE");
+  Serial.println("[BOOT] Successfully booted in AP_MODE mode");
   Serial.println("###############################################");
 }
 
-void loop() {
-  if (mode == NetMode::AP_MODE) {
-  server.handleClient();
+void loop()
+{
+  if (mode == NetMode::AP_MODE)
+  {
+    server.handleClient();
 
-  if (pendingReboot) {
-    pendingReboot = false;
-    Serial.println("[PROV] Reboot in corso...");
-    delay(800);        // dà tempo di completare l'invio della risposta HTTP
-    ESP.restart();
+    if (pendingReboot)
+    {
+      pendingReboot = false;
+      Serial.println("[PROV] Rebooting...");
+      delay(800);
+      ESP.restart();
+    }
+
+    delay(10);
+    return;
   }
 
-  delay(10);
-  return;
-}
+  if (mode == NetMode::BT_CLS)
+  {
+    if (Serial.available())
+    {
+      SerialBT.write(Serial.read());
+    }
+    if (SerialBT.available())
+    {
+      Serial.write(SerialBT.read());
+    }
+  }
 
-  // Modalità STA_OK:
+  // STA_OK mode:
   // 1) MQTT poll
-  if (mqttClient.connected()) {
+  if (mqttClient.connected())
+  {
     mqttClient.poll();
-  } else {
-    // se MQTT cade, riprova ogni tanto
+  }
+  else
+  {
+    // when MQTT fails, retry every 5s
     static uint32_t lastMqttRetry = 0;
-    if (millis() - lastMqttRetry > 5000) {
+    if (millis() - lastMqttRetry > 5000)
+    {
       lastMqttRetry = millis();
-      Serial.println("[MQTT] Non connesso -> ritento...");
+      Serial.println("[MQTT] Connection Failed -> retrying...");
       mqttReady = mqttConnect();
     }
   }
 
-  // 2) Gestione bottoni
+  // 2) Buttons management
   handleButton(b1, 1);
   handleButton(b2, 2);
 
-  // 3) Se cade WiFi: tenta riconnessione, poi torna in AP
-  if (WiFi.status() != WL_CONNECTED) {
-    if (millis() - lastReconnectAttemptMs > RECONNECT_COOLDOWN_MS) {
+  // 3) when WiFi fails: retry, then switch to AP
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    if (millis() - lastReconnectAttemptMs > RECONNECT_COOLDOWN_MS)
+    {
       lastReconnectAttemptMs = millis();
-      Serial.println("[STA] WiFi non connesso -> tento riconnessione...");
+      Serial.println("[STA] WiFi not connected -> retrying...");
 
       bool ok = connectSTA(savedSsid.c_str(), savedPwd.c_str(), WIFI_CONNECT_TIMEOUT_MS);
-      if (!ok) {
-        Serial.println("[STA] Riconnessione fallita -> torno in AP provisioning");
+      if (!ok)
+      {
+        Serial.println("[STA] Retry Failed -> switch back to AP provisioning");
         mode = NetMode::AP_MODE;
         startAP();
-      } else {
-        Serial.println("[STA] Riconnessione OK -> (ri)provo MQTT");
+      }
+      else
+      {
+        Serial.println("[STA] Retry OK -> retrying connection to MQTT");
         mqttReady = mqttConnect();
       }
     }
