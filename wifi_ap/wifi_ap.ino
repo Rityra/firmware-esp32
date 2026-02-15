@@ -6,7 +6,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoMqttClient.h>
 
-#include "BluetoothSerial.h"
+#include <BluetoothSerial.h>
 
 // ==================== CHECK BLUETOOTH ====================
 
@@ -203,24 +203,18 @@ void attachWiFiEvents()
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
                {
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      Serial.print("[EVENT] STA_DISCONNECTED reason=");
       Serial.println(info.wifi_sta_disconnected.reason);
     } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
-      Serial.println("[EVENT] STA_CONNECTED");
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      Serial.print("[EVENT] STA_GOT_IP: ");
       Serial.println(WiFi.localIP());
     } else if (event == ARDUINO_EVENT_WIFI_AP_START) {
-      Serial.println("[EVENT] AP_START");
     } else if (event == ARDUINO_EVENT_WIFI_AP_STOP) {
-      Serial.println("[EVENT] AP_STOP");
     } });
 }
 
 // ==================== NVS: load/save/clear ====================
 void loadCreds()
 {
-  Serial.println("[NVS] Reading stored credentials...");
   prefs.begin("wifi", true);
   savedSsid = prefs.getString("ssid", "");
   savedPwd = prefs.getString("pwd", "");
@@ -228,51 +222,33 @@ void loadCreds()
 
   if (savedSsid.length() > 0)
   {
-    Serial.print("[NVS] Stored SSID: ");
     Serial.println(savedSsid);
-    Serial.print("[NVS] Stored PWD: ");
-    Serial.println(savedPwd.length() ? "(not empty)" : "(empty)");
   }
   else
   {
-    Serial.println("[NVS] Could not find any stored credentials.");
   }
 }
 
 void saveCreds(const String &ssid, const String &pwd)
 {
-  Serial.println("[NVS] Storing credentials...");
-  Serial.print("[NVS] SSID = ");
-  Serial.println(ssid);
-  Serial.print("[NVS] PWD  = ");
-  Serial.println(pwd.length() ? "(not empty)" : "(empty)");
-
   prefs.begin("wifi", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pwd", pwd);
   prefs.end();
-
-  Serial.println("[NVS] Successfully stored.");
 }
 
 void clearCreds()
 {
-  Serial.println("[NVS] Removing stored ssid/pwd...");
   prefs.begin("wifi", false);
   prefs.remove("ssid");
   prefs.remove("pwd");
   prefs.end();
-  Serial.println("[NVS] Successfully removed.");
 }
 
 // ==================== WIFI CONNECT (persistent) ==========================
 bool connectSTA(const char *ssid, const char *pwd, uint32_t timeoutMs)
 {
-  Serial.println("--------------------------------------------------");
-  Serial.println("[STA] Establishing WiFi connection...");
-  Serial.print("[STA] SSID: ");
   Serial.println(ssid);
-  Serial.print("[STA] Timeout (ms): ");
   Serial.println(timeoutMs);
 
   WiFi.persistent(false);
@@ -283,56 +259,40 @@ bool connectSTA(const char *ssid, const char *pwd, uint32_t timeoutMs)
 
   // Avoid disconnect(true) (it might reset and terminate AP and/or HTTP connection)
   // disconnect(false,false) terminated STA only
-  Serial.println("[STA] WiFi.disconnect(false,false) + delay(200)");
   WiFi.disconnect(false, false);
   delay(200);
 
-  Serial.println("[STA] WiFi.begin(...)");
   WiFi.begin(ssid, pwd);
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs)
   {
     delay(200);
-    Serial.print(".");
   }
-  Serial.println();
 
   wl_status_t st = WiFi.status();
-  Serial.print("[WiFi] Status = ");
   Serial.println(wifiStatusToStr(st));
 
   if (st == WL_CONNECTED)
   {
-    Serial.println("[STA] Connection OK!");
-    Serial.print("[STA] IP: ");
     Serial.println(WiFi.localIP());
-    Serial.print("[STA] RSSI: ");
     Serial.println(WiFi.RSSI());
-    Serial.println("--------------------------------------------------");
     return true;
   }
-
-  Serial.println("[STA] Connection Failed.");
-  Serial.println("--------------------------------------------------");
   return false;
 }
 
 // ==================== AP start/stop ==================================
 void stopAPKeepSTA()
 {
-  Serial.println("[AP] Tearing down Access Point (softAPdisconnect)");
 
   WiFi.mode(WIFI_AP_STA);
   delay(100);
 
   bool r = WiFi.softAPdisconnect(true);
-  Serial.print("[AP] softAPdisconnect result: ");
-  Serial.println(r ? "true" : "false");
 
   delay(100);
   WiFi.mode(WIFI_STA);
-  Serial.println("[STA] Connection mode STA");
 }
 
 // ==================== MQTT ====================
@@ -363,9 +323,6 @@ void setLed(bool on)
   doc["led"] = on;
   doc["ts"] = (uint32_t)millis();
   publishJson(TOPIC_LED_STATE, doc);
-
-  Serial.print("[LED] Current state: ");
-  Serial.println(on ? "ON" : "OFF");
 }
 
 bool parseLedCommand(const String &payload, bool &outOn)
@@ -411,12 +368,8 @@ void onMqttMessage(int messageSize)
     payload += (char)mqttClient.read();
   }
 
-  Serial.println("--------------------------------------------------");
-  Serial.print("[MQTT] Msg on topic: ");
   Serial.println(topic);
-  Serial.print("[MQTT] Payload: ");
   Serial.println(payload);
-  Serial.println("--------------------------------------------------");
 
   if (topic == TOPIC_LED_SET)
   {
@@ -427,19 +380,16 @@ void onMqttMessage(int messageSize)
     }
     else
     {
-      Serial.println("[MQTT] LED command not valid (expected on/off o JSON {\"led\":true})");
     }
   }
 }
 
 bool mqttConnect()
 {
-  Serial.println("[MQTT] Config TLS cert...");
   tlsClient.setCACert(AWS_ROOT_CA);
   tlsClient.setCertificate(DEVICE_CERT);
   tlsClient.setPrivateKey(DEVICE_PRIVATE_KEY);
 
-  Serial.print("[MQTT] Connecting to AWS IoT: ");
   Serial.print(AWS_IOT_ENDPOINT);
   Serial.print(":");
   Serial.println(AWS_IOT_PORT);
@@ -448,15 +398,12 @@ bool mqttConnect()
 
   if (!mqttClient.connect(AWS_IOT_ENDPOINT, AWS_IOT_PORT))
   {
-    Serial.print("[MQTT] Connection Failed, error: ");
     Serial.println(mqttClient.connectError());
     return false;
   }
 
-  Serial.println("[MQTT] Connection OK!");
   mqttClient.onMessage(onMqttMessage);
 
-  Serial.print("[MQTT] Subscribe: ");
   Serial.println(TOPIC_LED_SET);
   mqttClient.subscribe(TOPIC_LED_SET);
 
@@ -493,41 +440,24 @@ void handleButton(ButtonState &b, int id)
     doc["ts"] = (uint32_t)millis();
 
     publishJson(TOPIC_BUTTONS, doc);
-
-    Serial.print("[BTN] Button ");
-    Serial.print(id);
-    Serial.print(" -> ");
-    Serial.println(pressed ? "PRESSED" : "RELEASED");
   }
 }
 
 // ==================== AP WEB SERVER ====================
 void startAP()
 {
-  Serial.println("==================================================");
-  Serial.println("[AP] Starting access point provisioning...");
-  Serial.print("[AP] SSID: ");
-  Serial.println(AP_SSID);
-  Serial.print("[AP] PASS: ");
-  Serial.println(AP_PASS);
-
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
 
   bool ok = WiFi.softAP(AP_SSID, AP_PASS);
-  Serial.print("[AP] softAP start: ");
-  Serial.println(ok ? "OK" : "FAIL");
 
   IPAddress apIP = WiFi.softAPIP();
-  Serial.print("[AP] IP access point: ");
-  Serial.println(apIP);
 
   server.stop();
   server.close();
 
   server.on("/", HTTP_GET, [apIP]()
             {
-    Serial.println("[HTTP] GET /");
 
     StaticJsonDocument<512> doc;
     doc["device"] = "smartThing";
@@ -540,7 +470,6 @@ void startAP()
 
   server.on("/wifi", HTTP_POST, []()
             {
-  Serial.println("[HTTP] POST /wifi");
 
   if (!server.hasArg("plain")) {
     StaticJsonDocument<180> err;
@@ -551,8 +480,6 @@ void startAP()
   }
 
   String body = server.arg("plain");
-  Serial.print("[HTTP] Body was received: ");
-  Serial.println(body);
 
   StaticJsonDocument<256> doc;
   DeserializationError e = deserializeJson(doc, body);
@@ -589,7 +516,7 @@ void startAP()
   resp["ok"] = true;
   resp["ssid"] = ssid;
   resp["status"] = "rebooting";
-  resp["note"] = "The device is rebooting and will try to connect to the provided network";
+  resp["note"] = "Device rebooting";
   sendJson(200, resp);
   delay(50);
   pendingReboot = true; });
@@ -597,7 +524,6 @@ void startAP()
   // Route /clear
   server.on("/clear", HTTP_POST, []()
             {
-    Serial.println("[HTTP] POST /clear -> deleting credentials");
 
     clearCreds();
     savedSsid = "";
@@ -609,18 +535,12 @@ void startAP()
     sendJson(200, resp); });
 
   server.begin();
-  Serial.println("[HTTP] Server running on port 80");
-  Serial.println("==================================================");
 }
 
 void serialBTCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
 {
-  Serial.println("[BOOT] STA_OK -> Trying to connect to MQTT...");
   mode = NetMode::BT_CLS;
   mqttReady = mqttConnect();
-
-  Serial.println("[BOOT] Successfully booted in BT_CLS mode");
-  Serial.println("###############################################");
 }
 
 // ==================== SETUP / LOOP ==================================
@@ -628,11 +548,6 @@ void setup()
 {
   Serial.begin(115200);
   delay(250);
-
-  Serial.println();
-  Serial.println("#####################################################");
-  Serial.println("# smartThing - WiFi + MQTT Boot + BlueTooth CLassic #");
-  Serial.println("#####################################################");
 
   // GPIO
   pinMode(LED_PIN, OUTPUT);
@@ -647,57 +562,39 @@ void setup()
   // When stored credentials exist: try connecting to STA with retry fallback
   if (savedSsid.length() > 0)
   {
-    Serial.println("[BOOT] Credentials found -> trying connecting to STA...");
 
     bool ok = false;
     for (uint8_t i = 1; i <= WIFI_CONNECT_RETRIES; i++)
     {
-      Serial.print("[BOOT] Attempt #");
-      Serial.println(i);
-
       ok = connectSTA(savedSsid.c_str(), savedPwd.c_str(), WIFI_CONNECT_TIMEOUT_MS);
       if (ok)
         break;
-
-      Serial.println("[BOOT] Awaiting 1s before next attempt...");
       delay(1000);
     }
 
     if (ok)
     {
       mode = NetMode::STA_OK;
-      Serial.println("[BOOT] STA_OK -> Trying to connect to MQTT...");
       mqttReady = mqttConnect();
-
-      Serial.println("[BOOT] Successfully booted in STA_OK mode");
-      Serial.println("###############################################");
       return;
     }
-
-    Serial.println("[BOOT] Connection Failed -> start AP provisioning");
   }
   else
   {
-    Serial.println("[BOOT] Missing Credentials -> start AP provisioning");
   }
 
   SerialBT.register_callback(serialBTCallback);
 
   if (!SerialBT.begin("smartThing"))
   {
-    Serial.println("An error occurred initializing Bluetooth");
   }
   else
   {
-    Serial.println("Bluetooth initialized");
   }
 
   // Fallback: AP provisioning
   mode = NetMode::AP_MODE;
   startAP();
-
-  Serial.println("[BOOT] Successfully booted in AP_MODE mode");
-  Serial.println("###############################################");
 }
 
 void loop()
@@ -709,7 +606,6 @@ void loop()
     if (pendingReboot)
     {
       pendingReboot = false;
-      Serial.println("[PROV] Rebooting...");
       delay(800);
       ESP.restart();
     }
@@ -743,7 +639,6 @@ void loop()
     if (millis() - lastMqttRetry > 5000)
     {
       lastMqttRetry = millis();
-      Serial.println("[MQTT] Connection Failed -> retrying...");
       mqttReady = mqttConnect();
     }
   }
@@ -758,18 +653,15 @@ void loop()
     if (millis() - lastReconnectAttemptMs > RECONNECT_COOLDOWN_MS)
     {
       lastReconnectAttemptMs = millis();
-      Serial.println("[STA] WiFi not connected -> retrying...");
 
       bool ok = connectSTA(savedSsid.c_str(), savedPwd.c_str(), WIFI_CONNECT_TIMEOUT_MS);
       if (!ok)
       {
-        Serial.println("[STA] Retry Failed -> switch back to AP provisioning");
         mode = NetMode::AP_MODE;
         startAP();
       }
       else
       {
-        Serial.println("[STA] Retry OK -> retrying connection to MQTT");
         mqttReady = mqttConnect();
       }
     }

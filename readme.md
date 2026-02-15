@@ -23,7 +23,7 @@ Compile for esp32
 ```
 arduino-cli compile --fqbn esp32:esp32:esp32 aws_iot_tls.ino
 
-arduino-cli compile --fqbn esp32:esp32:esp32 wifi_ap.ino
+arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app wifi_ap.ino
 ```
 
 Upload to board:
