@@ -21,17 +21,19 @@ arduino-cli lib install PubSubClient
 Compile for esp32
 
 ```
-arduino-cli compile --fqbn esp32:esp32:esp32 aws_iot_tls.ino
+arduino-cli compile --fqbn esp32:esp32:esp32 mqtt_connect/mqtt_connect.ino
 
-arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app wifi_ap.ino
+arduino-cli compile --fqbn esp32:esp32:esp32 wifi_ap/wifi_ap.ino
+
+arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app wifi_bt_ap/wifi_bt_ap.ino
 ```
 
 Upload to board:
 
 ```
-arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 aws_iot_tls.ino
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 mqtt_connect/mqtt_connect.ino
 
-arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 wifi_ap.ino
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 wifi_ap/wifi_ap.ino
 ```
 
 Reset ESP32 flash memory:
@@ -39,7 +41,16 @@ Reset ESP32 flash memory:
 - [step by step](https://randomnerdtutorials.com/esp32-erase-flash-memory/)
 - [dependencies](https://docs.espressif.com/projects/esptool/en/latest/esp32/installation.html)
 - [Python venv in Arch](https://stackoverflow.com/a/79304690/10708345)
-- TL;TR: press the board's boot button + `python -m esptool --chip esp32 erase_flash`
+- TL;TR:
+  - `. .venv/bin/activate.fish`
+  - `pip install esptool`
+  - `sudo chmod 666 /dev/ttyUSB0`
+  - press the board's boot button
+  - `python -m esptool --chip esp32 --port /dev/ttyUSB0 erase_flash`
+
+### TODO
+
+- make AP IP dynamic: [see docs](https://arduino-esp8266.readthedocs.io/en/latest/esp8266wifi/soft-access-point-class.html#softapconfig)
 
 ### Sketch Documentation
 
