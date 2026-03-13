@@ -491,7 +491,7 @@ void startAP()
     doc["ap_ip"] = apIP.toString();
     doc["post_to"] = "/wifi";
     doc["example"] = "{\"ssid\":\"YourWiFi2.4G\",\"pwd\":\"YourPass\"}";
-    doc["clear_saved"] = "POST /clear";
+    doc["clear_saved"] = "/clear";
     sendJson(200, doc); });
 
   server.on("/wifi", HTTP_POST, []()
